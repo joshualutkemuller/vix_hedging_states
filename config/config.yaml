@@ -1,0 +1,126 @@
+# ================================
+# Project configuration
+# ================================
+
+seed: 42
+
+paths:
+  data_dir: data
+  reports_dir: reports
+  figures_dir: reports/figures
+  states_dir: reports/states
+
+# --------------------------------
+# Data loading & validation
+# --------------------------------
+data:
+  # Filenames are relative to paths.data_dir
+  vix_file: vix.csv                # required (date,vix)
+  vvix_file: vvix.csv              # optional (date,vvix)
+  vx_file: vx.csv                  # optional (date,vx1,vx2,vx3[,vx4...])
+  spy_tr_file: spy_tr.csv          # required (date,spy_tr)
+  spy_ohlcv_file: spy_ohlcv.csv    # optional (Date,Open,High,Low,Close,Adj Close,Volume)
+
+  # Enforce presence of minimum datasets before merging.
+  # Start with ["vix","spy_tr"] and add "vx","vvix" once available.
+  strict: true
+  required: ["vix","spy_tr"]
+
+  # Limit which columns are read from each CSV (robust to extra columns)
+  use_columns:
+    vix: ["date", "vix"]
+    vvix: ["date", "vvix"]
+    vx: ["date", "vx1", "vx2", "vx3", "vx4"]   # ok if some are missing
+    spy_tr: ["date", "spy_tr"]
+    # yfinance-style OHLCV headers (note capital 'Date')
+    spy_ohlcv: ["Date","Open","High","Low","Close","Adj Close","Volume"]
+
+# --------------------------------
+# Feature engineering
+# --------------------------------
+features:
+  # Columns the pipeline *tries* to use. If a feature can't be built (e.g., vx missing),
+  # it is skipped gracefully. Z-scores are added with a *_z suffix.
+  use_columns:
+    - vix
+    - vvix          # optional
+    - rv20          # realized vol (from SPY TR)
+    - basis1        # (vx1 - vix) if vx present
+    - slope12       # vx2 - vx1
+    - slope13       # vx3 - vx1
+    - curvature     # vx3 - 2*vx2 + vx1
+    - dvix_5        # 5D change
+    - dvix_20       # 1M change
+
+  # Rolling window (trading days) for z-scores used by clustering/EDA
+  rolling_zscore_window: 1260   # ~5y
+
+# --------------------------------
+# State discovery (clustering / HMM)
+# --------------------------------
+states:
+  k: 4
+  labels: ["carry_contango", "flat", "stress_backwardation", "convex_stress"]
+  random_state: 42
+  scale: true
+
+  # Optional: walk-forward labeling to avoid look-ahead.
+  walk_forward: false            # if true, __scripts__ can switch to OOS labeling
+  fit_window_days: 1260          # ~5y training window
+  step_days: 21                  # refit cadence
+  min_fit_rows: 504              # need >=2y of clean rows to fit
+
+# --------------------------------
+# Hedging policy & backtest engine
+# --------------------------------
+policy:
+  # "proxy" = fast overlay (spend vs. down-capture), "black_scholes" = priced (if enabled)
+  engine: proxy
+
+  # When to hedge (by state label). Add/remove labels as you see fit.
+  hedge_states: ["stress_backwardation", "convex_stress"]
+
+  # Budget & contract knobs (tenor/moneyness are placeholders for proxy; used if priced)
+  annual_budget: 0.02        # 2%/yr spent only on days hedge is ON
+  tenor_days: 126            # ~6M
+  moneyness_pct: -0.10       # 10% OTM
+  sensitivity: 0.70          # proxy payoff fraction of down moves (only when ON)
+
+  # Optional *extra* triggers that must also be true to turn hedge ON
+  trigger:
+    type: all     # "all" = AND, "any" = OR, "none" disables
+    rules:
+      require_negative_slope12: true   # needs vx data; ignored if slope12 missing
+      require_vix_z_gt: 0.5            # only hedge if VIX is > +0.5σ
+      require_vvix_z_gt:               # null/omitted -> ignored
+
+backtest:
+  initial_nav: 100.0
+  rebalance_cadence_days: 21
+  costs:
+    bid_ask_bps: 0.0
+    commission_per_trade: 0.0
+
+# --------------------------------
+# Evaluation metrics & reporting
+# --------------------------------
+evaluation:
+  es_alpha: 0.95       # ES95
+  es_alpha_tail: 0.99  # ES99
+
+# --------------------------------
+# Plotting defaults
+# --------------------------------
+plots:
+  dpi: 150
+  save_png: true
+
+# --------------------------------
+# External data helpers (optional)
+# --------------------------------
+external:
+  nasdaq_data_link:
+    # If you keep your key in a custom file, scripts can read it here
+    keyfile: config/.corporatenasdaqdatalinkapikey
+    # Use per-contract pull & stitch when CHRIS/CBOE_VX{1..} is not accessible
+    use_contracts: true
